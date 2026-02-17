@@ -1,29 +1,29 @@
 """
-Усиленный Демонстратор Композициональности v2
+Enhanced Compositionality Demonstrator v2
 =============================================
-Оптимизирован: ~3x быстрее предыдущей версии.
+Optimized: ~3x faster than the previous version.
 
-Ускорения:
-  - STEPS_BASE: 30k → 15k  (инвариант формируется раньше)
-  - Уровни 1 и 2 используют ОДНУ базовую модель (не 5 отдельных)
-  - Sweep Ур.2: 4 точки → 3 точки
-  - Уровень 3: отдельная модель, НЕ обучает O4 совсем
+Optimizations:
+  - STEPS_BASE: 30k → 15k (the invariant forms earlier)
+  - Levels 1 and 2 use ONE base model (instead of 5 separate ones)
+  - Level 2 Sweep: 4 points → 3 points
+  - Level 3: separate model, does NOT train O4 at all
 
-Три уровня доказательства:
+Three levels of proof:
 
-  УРОВЕНЬ 1 — МАСШТАБ:
-    Обучено только D0 (4 операции).
-    Zero-Shot весь D1 через один ключ k_dom=D1.
+  LEVEL 1 — SCALE:
+    Only D0 (4 operations) is trained.
+    Zero-Shot across the entire D1 via a single key k_dom=D1.
 
-  УРОВЕНЬ 2 — ГРАДИЕНТ УВЕРЕННОСТИ:
-    Sweep: 7/8 → 4/8 → 2/8 пропущенных.
-    Плато = инвариант, а не интерполяция.
+  LEVEL 2 — CONFIDENCE GRADIENT:
+    Sweep: 7/8 → 4/8 → 2/8 omitted.
+    Plateau = invariant, not interpolation.
 
-  УРОВЕНЬ 3 — МЕТА-КОМПОЗИЦИЯ (новая операция):
-    O4 = max(a,b) - min(a,b)  [разброс — никогда не обучалась]
-    Модель знает MAX (O2) и MIN (O3) по отдельности.
-    k_meta='compose' должен создать O4 = O2 - O3 из известных частей.
-    Это инвариант инвариантов: отношение между операциями.
+  LEVEL 3 — META-COMPOSITION (new operation):
+    O4 = max(a,b) - min(a,b) [spread — never trained directly]
+    The model knows MAX (O2) and MIN (O3) separately.
+    k_meta='compose' must create O4 = O2 - O3 from known parts.
+    This is an invariant of invariants: a relationship between operations.
 """
 
 import torch
@@ -43,17 +43,17 @@ DEVICE     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
 ORTHO_LAM  = 0.05
 LR         = 0.001
-STEPS_BASE = 15000   # ускорение: 30k → 15k
+STEPS_BASE = 15000   # acceleration: 30k → 15k
 STEPS_META = 8000
 SEED       = 42
 
-# ── ОПЕРАЦИИ ──────────────────────────────────────────────────────────────────
+# ── OPERATIONS ────────────────────────────────────────────────────────────────
 OP_NAMES = {0:'ADD', 1:'SUB', 2:'MAX', 3:'MIN', 4:'SPREAD'}
 
 class TaskGen:
     """
-    O0=ADD, O1=SUB, O2=MAX, O3=MIN — базовые
-    O4=SPREAD = max(a,b)-min(a,b)  — новая, никогда не обучается напрямую
+    O0=ADD, O1=SUB, O2=MAX, O3=MIN — base operations
+    O4=SPREAD = max(a,b)-min(a,b)  — new, never trained directly
     """
     def __init__(self, domain, op):
         self.domain = domain
@@ -87,7 +87,7 @@ def get_batch(gen, n):
             torch.FloatTensor(y).unsqueeze(1).to(DEVICE))
 
 
-# ── МОДЕЛЬ ────────────────────────────────────────────────────────────────────
+# ── MODEL ─────────────────────────────────────────────────────────────────────
 class KeyAddressedTransformer(nn.Module):
     def __init__(self):
         super().__init__()
@@ -139,7 +139,7 @@ class KeyAddressedTransformer(nn.Module):
             return (d.T @ o).abs().mean().item()
 
 
-# ── УТИЛИТЫ ───────────────────────────────────────────────────────────────────
+# ── UTILITIES ─────────────────────────────────────────────────────────────────
 def build_keys():
     roots  = [torch.zeros(DOM_DIM).to(DEVICE) for _ in range(2)]
     roots[0][0] = 1.0; roots[1][1] = 1.0
@@ -160,7 +160,7 @@ def acc(model, task_gen, kd, ko, km=None, n=800):
 
 
 def train(model, task_list, key, steps, lr=LR, log_label=None):
-    """Round-robin обучение. task_list = список (d,o)."""
+    """Round-robin training. task_list = list of (d,o)."""
     opt  = optim.AdamW(model.parameters(), lr=lr)
     bce  = nn.BCELoss()
     freq = steps // 3
@@ -180,24 +180,24 @@ def train(model, task_list, key, steps, lr=LR, log_label=None):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# УРОВЕНЬ 1: МАСШТАБ
+# LEVEL 1: SCALE
 # ══════════════════════════════════════════════════════════════════════════════
 def level1_and_2(key):
     """
-    Уровни 1 и 2 используют одну базовую модель — экономия времени.
+    Levels 1 and 2 use the same base model to save time.
     """
 
-    # ── Уровень 1: только D0 ──────────────────────────────────────────────────
+    # ── Level 1: Only D0 ──────────────────────────────────────────────────────
     print(f"\n{'='*62}")
-    print(f"  УРОВЕНЬ 1: МАСШТАБ")
-    print(f"  Обучено: D0×ALL | Zero-Shot: весь D1")
+    print(f"  LEVEL 1: SCALE")
+    print(f"  Trained: D0×ALL | Zero-Shot: entire D1")
     print(f"{'='*62}")
 
     torch.manual_seed(SEED); random.seed(SEED); np.random.seed(SEED)
     m1 = KeyAddressedTransformer().to(DEVICE)
     train(m1, [(0,o) for o in range(4)], key, STEPS_BASE, log_label="L1")
 
-    print(f"\n  D0 (обучено):              D1 (Zero-Shot):")
+    print(f"\n  D0 (Trained):              D1 (Zero-Shot):")
     zs_accs = []
     for o in range(4):
         kd0, ko0 = key(0,o); kd1, ko1 = key(1,o)
@@ -211,17 +211,17 @@ def level1_and_2(key):
               f"{f1} D1×{OP_NAMES[o]:<6}: {a1:.1f}%  {bar}")
 
     avg1 = sum(zs_accs)/len(zs_accs)
-    print(f"\n  Zero-Shot среднее: {avg1:.1f}%  "
-          f"(один ключ k_dom=D1 → {len(zs_accs)} операции)")
+    print(f"\n  Zero-Shot Average: {avg1:.1f}%  "
+          f"(one key k_dom=D1 → {len(zs_accs)} operations)")
 
-    # ── Уровень 2: sweep на новых моделях ────────────────────────────────────
+    # ── Level 2: Sweep on new models ──────────────────────────────────────────
     print(f"\n{'='*62}")
-    print(f"  УРОВЕНЬ 2: ГРАДИЕНТ УВЕРЕННОСТИ")
-    print(f"  Sweep: сколько примеров нужно для инварианта?")
+    print(f"  LEVEL 2: CONFIDENCE GRADIENT")
+    print(f"  Sweep: how many examples are needed for an invariant?")
     print(f"{'='*62}")
 
     all8   = [(d,o) for d in range(2) for o in range(4)]
-    ZS     = (1, 3)   # D1×MIN — цель
+    ZS     = (1, 3)   # D1×MIN — target
 
     configs = [
         ("7/8", [t for t in all8 if t != ZS]),
@@ -229,8 +229,8 @@ def level1_and_2(key):
         ("2/8", [(0,2),(0,3)]),
     ]
 
-    print(f"\n  {'Обучено':>6} | {'Train':>7} | {'ZS D1×MIN':>10} | Вердикт")
-    print(f"  {'-'*46}")
+    print(f"\n  {'Trained':>7} | {'Train':>7} | {'ZS D1×MIN':>10} | Verdict")
+    print(f"  {'-'*48}")
 
     sweep_results = []
     for label, tlist in configs:
@@ -240,106 +240,106 @@ def level1_and_2(key):
         tr  = sum(acc(m,TaskGen(d,o),*key(d,o)) for d,o in tlist)/len(tlist)
         zs  = acc(m, TaskGen(*ZS), *key(*ZS))
         sweep_results.append((label, tr, zs))
-        verd = "✓ Инвариант" if zs>80 else ("~ Частичный" if zs>65 else "✗ Нет")
-        print(f"  {label:>6} | {tr:>6.1f}% | {zs:>9.1f}% | {verd}")
+        verd = "✓ Invariant" if zs>80 else ("~ Partial" if zs>65 else "✗ None")
+        print(f"  {label:>7} | {tr:>6.1f}% | {zs:>9.1f}% | {verd}")
 
-    print(f"\n  Кривая Zero-Shot:")
+    print(f"\n  Zero-Shot Curve:")
     for label, _, zs in sweep_results:
         bar = "█"*int(zs/5)
         print(f"    {label}: {zs:.1f}%  {bar}")
 
     drop = sweep_results[0][2] - sweep_results[1][2]
-    print(f"\n  Падение 7→4/8: {drop:.1f}%  "
-          f"{'✓ инвариант, не интерполяция' if abs(drop)<15 else '~ возможна интерполяция'}")
+    print(f"\n  Drop 7→4/8: {drop:.1f}%  "
+          f"{'✓ invariant, not interpolation' if abs(drop)<15 else '~ possible interpolation'}")
 
     return avg1, sweep_results
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# УРОВЕНЬ 3: МЕТА-КОМПОЗИЦИЯ (новая операция SPREAD)
+# LEVEL 3: META-COMPOSITION (new SPREAD operation)
 # ══════════════════════════════════════════════════════════════════════════════
 def level3_meta(key):
     print(f"\n{'='*62}")
-    print(f"  УРОВЕНЬ 3: МЕТА-КОМПОЗИЦИЯ")
-    print(f"  O4=SPREAD = max(a,b)-min(a,b)  [никогда не обучалась]")
-    print(f"  k_meta='compose' = MAX затем MIN → должен дать SPREAD")
-    print(f"  Аналог LLM: 'напиши резюме' + 'стиль Хемингуэя' = новое")
+    print(f"  LEVEL 3: META-COMPOSITION")
+    print(f"  O4=SPREAD = max(a,b)-min(a,b)  [never trained]")
+    print(f"  k_meta='compose' = MAX then MIN → must yield SPREAD")
+    print(f"  LLM Analogy: 'write a resume' + 'Hemingway style' = new")
     print(f"{'='*62}")
 
-    # Мета-ключи
+    # Meta-keys
     def mk(v):
         t = torch.zeros(META_DIM).to(DEVICE); t[v] = 1.0
         return t.view(1,1,-1)
 
-    K_COMPOSE = mk(0)   # 'compose MAX и MIN'
-    K_DIRECT  = mk(1)   # контроль: прямой
-    K_NULL    = mk(2)   # нейтральный
+    K_COMPOSE = mk(0)   # 'compose MAX and MIN'
+    K_DIRECT  = mk(1)   # control: direct
+    K_NULL    = mk(2)   # neutral
 
     torch.manual_seed(SEED); random.seed(SEED)
     model = KeyAddressedTransformer().to(DEVICE)
 
-    # Stage 1: обучаем базовые операции O0-O3 (SPREAD не включаем)
+    # Stage 1: train base operations O0-O3 (SPREAD is excluded)
     base_ops = [(d,o) for d in range(2) for o in range(4)]
-    print(f"\n  Stage 1: базовые операции ADD/SUB/MAX/MIN ({STEPS_BASE} шагов)...")
+    print(f"\n  Stage 1: base operations ADD/SUB/MAX/MIN ({STEPS_BASE} steps)...")
     train(model, base_ops, key, STEPS_BASE, log_label="S1")
 
-    # Stage 2: обучаем proj_meta
-    # Обучаем: MAX + K_COMPOSE и MIN + K_COMPOSE → цель SPREAD
-    # Логика: SPREAD(a,b) = MAX(a,b) - MIN(a,b)
-    # Мета-ключ 'compose' должен научиться комбинировать два инварианта
-    print(f"\n  Stage 2: обучение мета-проектора на SPREAD ({STEPS_META} шагов)...")
-    print(f"    Обучаем: SPREAD(a,b) через k_op=MAX/MIN + k_meta=compose")
-    print(f"    Цель: модель угадывает результат операции SPREAD")
+    # Stage 2: train proj_meta
+    # Training: MAX + K_COMPOSE and MIN + K_COMPOSE → target is SPREAD
+    # Logic: SPREAD(a,b) = MAX(a,b) - MIN(a,b)
+    # The 'compose' meta-key must learn to combine two invariants
+    print(f"\n  Stage 2: training meta-projector on SPREAD ({STEPS_META} steps)...")
+    print(f"    Training: SPREAD(a,b) via k_op=MAX/MIN + k_meta=compose")
+    print(f"    Goal: model guesses the result of the SPREAD operation")
 
-    # Замораживаем всё кроме proj_meta
+    # Freeze everything except proj_meta
     for p in model.parameters():
         p.requires_grad_(False)
     model.proj_meta.weight.requires_grad_(True)
     opt = optim.AdamW([model.proj_meta.weight], lr=LR)
     bce = nn.BCELoss()
 
-    # Генерируем SPREAD через k_op=MAX (первый компонент)
-    # Во время обучения мета-проектора: вход MAX-ключ + мета → результат SPREAD
+    # Generate SPREAD via k_op=MAX (first component)
+    # During meta-projector training: input MAX-key + meta → result SPREAD
     spread_task_d0 = TaskGen(0, 4)  # D0×SPREAD
     spread_task_d1 = TaskGen(1, 4)  # D1×SPREAD
 
     freq = STEPS_META // 4
     for step in range(1, STEPS_META+1):
         model.train(); opt.zero_grad()
-        # Обучаем на D0×SPREAD используя k_op=MAX + K_COMPOSE
+        # Train on D0×SPREAD using k_op=MAX + K_COMPOSE
         use_d1 = step % 2 == 0
         task   = spread_task_d1 if use_d1 else spread_task_d0
         d      = 1 if use_d1 else 0
         x, y   = get_batch(task, BATCH_SIZE)
-        kd, ko = key(d, 2)   # k_op = MAX (O2) как "первый компонент" SPREAD
+        kd, ko = key(d, 2)   # k_op = MAX (O2) as the "first component" of SPREAD
         out,_  = model(x, kd, ko, K_COMPOSE)
         loss   = bce(out, y)
         loss.backward(); opt.step()
         if step % freq == 0:
-            print(f"    Шаг {step}/{STEPS_META} | BCE={loss.item():.4f}")
+            print(f"    Step {step}/{STEPS_META} | BCE={loss.item():.4f}")
 
     for p in model.parameters():
         p.requires_grad_(True)
 
-    # ── Тест ─────────────────────────────────────────────────────────────────
-    print(f"\n  ТЕСТ МЕТА-КОМПОЗИЦИИ:")
-    print(f"  {'Конфигурация':<42} | {'Acc':>6} | Статус")
+    # ── Test ──────────────────────────────────────────────────────────────────
+    print(f"\n  META-COMPOSITION TEST:")
+    print(f"  {'Configuration':<42} | {'Acc':>6} | Status")
     print(f"  {'-'*62}")
 
     tests = [
-        ("MAX (D0) — базовый контроль",    0, 2, None,       "контроль"),
-        ("MIN (D0) — базовый контроль",    0, 3, None,       "контроль"),
-        ("SPREAD (D0) без мета",           0, 4, None,       "базовый"),
-        ("SPREAD (D0) + k_meta=compose",   0, 4, K_COMPOSE,  "← ГЛАВНЫЙ"),
-        ("SPREAD (D1) + k_meta=compose",   1, 4, K_COMPOSE,  "← перенос домена"),
-        ("SPREAD (D0) + k_meta=direct",    0, 4, K_DIRECT,   "неверный мета"),
-        ("SPREAD (D0) + k_meta=null",      0, 4, K_NULL,     "нейтральный"),
+        ("MAX (D0) — base control",        0, 2, None,       "control"),
+        ("MIN (D0) — base control",        0, 3, None,       "control"),
+        ("SPREAD (D0) without meta",       0, 4, None,       "baseline"),
+        ("SPREAD (D0) + k_meta=compose",   0, 4, K_COMPOSE,  "← MAIN"),
+        ("SPREAD (D1) + k_meta=compose",   1, 4, K_COMPOSE,  "← domain transfer"),
+        ("SPREAD (D0) + k_meta=direct",    0, 4, K_DIRECT,   "wrong meta"),
+        ("SPREAD (D0) + k_meta=null",      0, 4, K_NULL,     "neutral"),
     ]
 
     results = {}
     for desc, d, o, km, tag in tests:
         kd, ko = key(d, o if o < 5 else 4)
-        # Для SPREAD используем k_op=MAX + мета
+        # For SPREAD, we use k_op=MAX + meta
         if o == 4:
             kd, ko_max = key(d, 2)
             a = acc(model, TaskGen(d,4), kd, ko_max, km)
@@ -349,73 +349,73 @@ def level3_meta(key):
         flag = "✓" if a>80 else ("~" if a>65 else "✗")
         print(f"  {desc:<42} | {a:>5.1f}% | {flag} {tag}")
 
-    base_spread = results.get("базовый", 50)
-    meta_spread = results.get("← ГЛАВНЫЙ", 50)
+    base_spread = results.get("baseline", 50)
+    meta_spread = results.get("← MAIN", 50)
     delta       = meta_spread - base_spread
 
-    print(f"\n  Эффект k_meta='compose' на SPREAD:")
-    print(f"  Без мета: {base_spread:.1f}%  →  С мета: {meta_spread:.1f}%  "
+    print(f"\n  Effect of k_meta='compose' on SPREAD:")
+    print(f"  Without meta: {base_spread:.1f}%  →  With meta: {meta_spread:.1f}%  "
           f"({delta:+.1f}%)")
 
     if meta_spread > 80:
-        print(f"\n  ✓ МЕТА-КОМПОЗИЦИЯ ПОДТВЕРЖДЕНА")
-        print(f"    k_meta='compose' создал новую операцию из двух известных")
-        print(f"    SPREAD = f(MAX-инвариант, MIN-инвариант)")
-        print(f"    Это уровень 'Мета-понятие' по Выготскому")
+        print(f"\n  ✓ META-COMPOSITION CONFIRMED")
+        print(f"    k_meta='compose' created a new operation from two known ones")
+        print(f"    SPREAD = f(MAX-invariant, MIN-invariant)")
+        print(f"    This is the 'Meta-concept' level according to Vygotsky")
     elif delta > 15:
-        print(f"\n  ~ ЧАСТИЧНАЯ МЕТА-КОМПОЗИЦИЯ (+{delta:.1f}%)")
-        print(f"    Мета-ключ работает, но недостаточно шагов обучения")
+        print(f"\n  ~ PARTIAL META-COMPOSITION (+{delta:.1f}%)")
+        print(f"    The meta-key works, but training steps are insufficient")
     else:
-        print(f"\n  ✗ МЕТА-КЛЮЧ НЕ АКТИВИРОВАН")
-        print(f"    SPREAD слишком далёк от MAX/MIN для одношагового мета-обучения")
-        print(f"    Нужен промежуточный слой или больше шагов")
+        print(f"\n  ✗ META-KEY NOT ACTIVATED")
+        print(f"    SPREAD is too far from MAX/MIN for single-step meta-training")
+        print(f"    An intermediate layer or more steps are needed")
 
     return base_spread, meta_spread
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ИТОГ
+# SUMMARY
 # ══════════════════════════════════════════════════════════════════════════════
 def print_summary(avg1, sweep, base_sp, meta_sp):
     zs_7 = sweep[0][2]; zs_2 = sweep[2][2]
     print(f"""
 {'='*62}
-  ИТОГОВЫЙ ОТЧЁТ
+  FINAL REPORT
 {'='*62}
   ┌──────────────────────────────────────────────────────┐
-  │ УРОВЕНЬ 1: Масштаб                                   │
-  │   Zero-Shot весь D1 (4 операции): {avg1:>5.1f}% avg          │
-  │   Один ключ k_dom=D1 → перенос синтаксиса            │
+  │ LEVEL 1: Scale                                       │
+  │   Zero-Shot entire D1 (4 operations): {avg1:>5.1f}% avg      │
+  │   One key k_dom=D1 → syntax transfer                 │
   ├──────────────────────────────────────────────────────┤
-  │ УРОВЕНЬ 2: Градиент уверенности                      │
-  │   Zero-Shot при 7/8 обучении:     {zs_7:>5.1f}%              │
-  │   Zero-Shot при 2/8 обучении:     {zs_2:>5.1f}%              │
-  │   Падение при уменьшении в 3.5x:  {zs_7-zs_2:>+5.1f}%              │
+  │ LEVEL 2: Confidence Gradient                         │
+  │   Zero-Shot with 7/8 training:    {zs_7:>5.1f}%              │
+  │   Zero-Shot with 2/8 training:    {zs_2:>5.1f}%              │
+  │   Drop when reduced by 3.5x:      {zs_7-zs_2:>+5.1f}%              │
   ├──────────────────────────────────────────────────────┤
-  │ УРОВЕНЬ 3: Мета-композиция (SPREAD = MAX - MIN)      │
-  │   SPREAD без мета-ключа:          {base_sp:>5.1f}%              │
+  │ LEVEL 3: Meta-composition (SPREAD = MAX - MIN)       │
+  │   SPREAD without meta-key:        {base_sp:>5.1f}%              │
   │   SPREAD + k_meta='compose':      {meta_sp:>5.1f}%              │
-  │   Эффект мета-ключа:              {meta_sp-base_sp:>+5.1f}%              │
+  │   Meta-key effect:                {meta_sp-base_sp:>+5.1f}%              │
   └──────────────────────────────────────────────────────┘
 
-  ИЕРАРХИЯ ПО ВЫГОТСКОМУ:
-  Синкрет    → конкретные пары D×O выучены
-  Комплекс   → перенос на новые комбинации (Ур.1)
-  Понятие    → инвариант устойчив при 2 примерах (Ур.2)
-  Мета       → новая операция из двух известных (Ур.3)
+  VYGOTSKY HIERARCHY:
+  Syncretism  → specific D×O pairs are learned
+  Complex     → transfer to new combinations (Lvl 1)
+  Concept     → invariant is stable with 2 examples (Lvl 2)
+  Meta-concept→ new operation from two known ones (Lvl 3)
 
-  АНАЛОГ В LLM:
-  k_dom  = "переведи на французский"
-  k_op   = "в стиле Хемингуэя"
-  k_meta = "но коротко"  ← модифицирует операцию
-  Zero-Shot: новая комбинация без примеров
+  LLM ANALOGY:
+  k_dom  = "translate to French"
+  k_op   = "in Hemingway style"
+  k_meta = "but keep it short" ← modifies the operation
+  Zero-Shot: a new combination without examples
 """)
-    print("✅ Завершён.")
+    print("✅ Complete.")
 
 
 def main():
-    print(f"🔑 ДЕМОНСТРАТОР КОМПОЗИЦИОНАЛЬНОСТИ v2  |  device={DEVICE}")
-    print(f"   Ускорен: STEPS={STEPS_BASE}, без дублирования моделей")
+    print(f"🔑 COMPOSITIONALITY DEMONSTRATOR v2  |  device={DEVICE}")
+    print(f"   Accelerated: STEPS={STEPS_BASE}, without model duplication")
 
     key = build_keys()
 
